@@ -1,0 +1,92 @@
+﻿@model ReceiptProcessor.Models.Receipt
+@{
+    ViewData["Title"] = "Receipt Details";
+}
+
+<div class="row">
+    <div class="col-md-12">
+        <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+                <li class="breadcrumb-item"><a href="/">Home</a></li>
+                <li class="breadcrumb-item active">Receipt Details</li>
+            </ol>
+        </nav>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12 mb-4">
+        <h1 class="display-5">Receipt Details</h1>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">Receipt Information</h5>
+            </div>
+            <div class="card-body">
+                <table class="table table-bordered">
+                    <tbody>
+                        <tr>
+                            <th style="width: 40%;">Receipt ID</th>
+                            <td>@Model.ReceiptId</td>
+                        </tr>
+                        <tr>
+                            <th>Merchant Name</th>
+                            <td>@(Model.MerchantName ?? "Unknown")</td>
+                        </tr>
+                        <tr>
+                            <th>Total Amount</th>
+                            <td><strong>@(Model.TotalAmount ?? "Not detected")</strong></td>
+                        </tr>
+                        <tr>
+                            <th>Upload Date</th>
+                            <td>@DateTime.Parse(Model.UploadDate).ToString("MMMM dd, yyyy hh:mm tt")</td>
+                        </tr>
+                        <tr>
+                            <th>Processed At</th>
+                            <td>@DateTime.Parse(Model.ProcessedAt).ToString("MMMM dd, yyyy hh:mm tt")</td>
+                        </tr>
+                        <tr>
+                            <th>S3 Location</th>
+                            <td><small class="text-muted">@Model.S3Key</small></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-6 mb-4">
+        <div class="card">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0">Extracted Text (@Model.ExtractedText.Count lines)</h5>
+            </div>
+            <div class="card-body">
+                @if (Model.ExtractedText.Any())
+                {
+                    <div class="extracted-text">
+                        <ol>
+                            @foreach (var line in Model.ExtractedText)
+                            {
+                                <li>@line</li>
+                            }
+                        </ol>
+                    </div>
+                }
+                else
+                {
+                    <p class="text-muted">No text was extracted from this receipt.</p>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <a href="/" class="btn btn-secondary">← Back to Home</a>
+    </div>
+</div>

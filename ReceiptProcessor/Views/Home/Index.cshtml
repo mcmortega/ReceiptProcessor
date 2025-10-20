@@ -1,0 +1,161 @@
+﻿@model List<ReceiptProcessor.Models.Receipt>
+@{
+    ViewData["Title"] = "Receipt Processor";
+}
+
+<div class="row">
+    <div class="col-md-12 mb-4">
+        <h1 class="display-4">Receipt Processor</h1>
+        <p class="lead">Upload receipts and extract information using AWS Rekognition</p>
+    </div>
+</div>
+
+<div class="row mb-5">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-body">
+                <h5 class="card-title">Upload New Receipt</h5>
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="upload-area" id="uploadArea">
+                        <input type="file" id="fileInput" name="file" accept="image/jpeg,image/png" style="display: none;" />
+                        <div id="uploadContent">
+                            <svg width="60" height="60" fill="currentColor" class="bi bi-cloud-upload mb-3" viewBox="0 0 16 16">
+                                <path d="M4.5 11.5A.5.5 0 0 1 5 11h10a.5.5 0 0 1 0 1H5a.5.5 0 0 1-.5-.5zm-2.5 0A.5.5 0 0 1 2.5 11H3a.5.5 0 0 1 0 1h-.5a.5.5 0 0 1-.5-.5zm5-2a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5z" />
+                                <path d="M7.646 5.146a.5.5 0 0 1 .708 0l2 2a.5.5 0 0 1-.708.708L8.5 6.707V10.5a.5.5 0 0 1-1 0V6.707L6.354 7.854a.5.5 0 1 1-.708-.708l2-2z" />
+                            </svg>
+                            <h5>Drop your receipt here or click to browse</h5>
+                            <p class="text-muted">Supports: JPG, JPEG, PNG</p>
+                        </div>
+                        <div id="uploadProgress" style="display: none;">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <p class="mt-2">Processing receipt...</p>
+                        </div>
+                    </div>
+                </form>
+                <div id="uploadResult" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-12">
+        <h2 class="mb-4">Recent Receipts</h2>
+        @if (Model.Any())
+        {
+            <div class="row">
+                @foreach (var receipt in Model.Take(12))
+                {
+                    <div class="col-md-4 mb-4">
+                        <div class="card receipt-card">
+                            <div class="card-body">
+                                <h5 class="card-title">@(receipt.MerchantName ?? "Receipt")</h5>
+                                <p class="card-text">
+                                    <strong>Total:</strong> @(receipt.TotalAmount ?? "N/A")<br />
+                                    <strong>Date:</strong> @DateTime.Parse(receipt.UploadDate).ToString("MMM dd, yyyy")<br />
+                                    <strong>Lines Extracted:</strong> @receipt.ExtractedText.Count
+                                </p>
+                                <a href="/Home/Details/@receipt.ReceiptId" class="btn btn-primary btn-sm">View Details</a>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="alert alert-info">
+                <strong>No receipts yet!</strong> Upload your first receipt to get started.
+            </div>
+        }
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const uploadForm = document.getElementById('uploadForm');
+        const uploadContent = document.getElementById('uploadContent');
+        const uploadProgress = document.getElementById('uploadProgress');
+        const uploadResult = document.getElementById('uploadResult');
+
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.style.borderColor = '#0056b3';
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.style.borderColor = '#007bff';
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.style.borderColor = '#007bff';
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                fileInput.files = files;
+                uploadFile();
+            }
+        });
+
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files.length > 0) {
+                uploadFile();
+            }
+        });
+
+        async function uploadFile() {
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            uploadContent.style.display = 'none';
+            uploadProgress.style.display = 'block';
+            uploadResult.innerHTML = '';
+
+            try {
+                const response = await fetch('/Home/Upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                uploadProgress.style.display = 'none';
+                uploadContent.style.display = 'block';
+
+                if (result.success) {
+                    uploadResult.innerHTML = `
+                        <div class="alert alert-success">
+                            <strong>Success!</strong> Receipt processed successfully.
+                            <br>Extracted ${result.extractedText.length} lines of text.
+                            ${result.totalAmount ? `<br><strong>Total Amount:</strong> ${result.totalAmount}` : ''}
+                            <br><a href="/Home/Details/${result.receiptId}" class="alert-link">View Details</a>
+                        </div>
+                    `;
+                    setTimeout(() => location.reload(), 2000);
+                } else {
+                    uploadResult.innerHTML = `
+                        <div class="alert alert-danger">
+                            <strong>Error!</strong> ${result.message}
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                uploadProgress.style.display = 'none';
+                uploadContent.style.display = 'block';
+                uploadResult.innerHTML = `
+                    <div class="alert alert-danger">
+                        <strong>Error!</strong> Failed to upload receipt.
+                    </div>
+                `;
+            }
+
+            fileInput.value = '';
+        }
+    </script>
+}

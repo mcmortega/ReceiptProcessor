@@ -1,0 +1,347 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Receipt Processing System - Free Tier Compatible Infrastructure'
+
+Parameters:
+  AppName:
+    Type: String
+    Default: receipt-processor
+    Description: Application name for resource naming
+
+Resources:
+  # S3 Bucket for Receipt Storage
+  ReceiptBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AppName}-receipts-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldReceipts
+            Status: Enabled
+            ExpirationInDays: 90
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+            AllowedOrigins:
+              - '*'
+            MaxAge: 3000
+
+  # DynamoDB Table for Receipt Metadata
+  ReceiptTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AppName}-receipts'
+      BillingMode: PROVISIONED
+      ReadCapacityUnits: 5
+      WriteCapacityUnits: 5
+      AttributeDefinitions:
+        - AttributeName: ReceiptId
+          AttributeType: S
+        - AttributeName: UploadDate
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ReceiptId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UploadDateIndex
+          KeySchema:
+            - AttributeName: UploadDate
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+
+  # IAM Role for Lambda Functions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ReceiptProcessingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub '${ReceiptBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: 
+                  - !GetAtt ReceiptTable.Arn
+                  - !Sub '${ReceiptTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - rekognition:DetectText
+                Resource: '*'
+
+  # IAM User for ASP.NET Application
+  AppUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub '${AppName}-app-user'
+      Policies:
+        - PolicyName: AppAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub '${ReceiptBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: 
+                  - !GetAtt ReceiptTable.Arn
+                  - !Sub '${ReceiptTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - rekognition:DetectText
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - execute-api:Invoke
+                Resource: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ReceiptApi}/*'
+
+  # Access Keys for App User
+  AppUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref AppUser
+
+  # Lambda Function for Receipt Processing
+  ProcessReceiptFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AppName}-process-receipt'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref ReceiptTable
+          S3_BUCKET: !Ref ReceiptBucket
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime
+          import uuid
+
+          s3 = boto3.client('s3')
+          dynamodb = boto3.resource('dynamodb')
+          rekognition = boto3.client('rekognition')
+
+          table = dynamodb.Table(os.environ['DYNAMODB_TABLE'])
+          bucket = os.environ['S3_BUCKET']
+
+          def lambda_handler(event, context):
+              try:
+                  body = json.loads(event.get('body', '{}'))
+                  receipt_id = body.get('receiptId')
+                  s3_key = body.get('s3Key')
+                  
+                  if not receipt_id or not s3_key:
+                      return {
+                          'statusCode': 400,
+                          'body': json.dumps({'error': 'Missing receiptId or s3Key'}),
+                          'headers': {'Content-Type': 'application/json'}
+                      }
+                  
+                  # Use Rekognition to detect text
+                  response = rekognition.detect_text(
+                      Image={'S3Object': {'Bucket': bucket, 'Name': s3_key}}
+                  )
+                  
+                  extracted_text = []
+                  total_amount = None
+                  date = None
+                  
+                  for text in response['TextDetections']:
+                      if text['Type'] == 'LINE':
+                          extracted_text.append(text['DetectedText'])
+                          
+                          # Simple parsing for total and date
+                          line = text['DetectedText'].upper()
+                          if 'TOTAL' in line and not total_amount:
+                              words = line.split()
+                              for word in words:
+                                  if '$' in word or word.replace('.', '').isdigit():
+                                      total_amount = word.replace('$', '')
+                  
+                  # Store in DynamoDB
+                  item = {
+                      'ReceiptId': receipt_id,
+                      'UploadDate': datetime.utcnow().isoformat(),
+                      'S3Key': s3_key,
+                      'ExtractedText': extracted_text,
+                      'TotalAmount': total_amount,
+                      'ProcessedAt': datetime.utcnow().isoformat()
+                  }
+                  
+                  table.put_item(Item=item)
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'message': 'Receipt processed successfully',
+                          'receiptId': receipt_id,
+                          'extractedLines': len(extracted_text),
+                          'totalAmount': total_amount
+                      }),
+                      'headers': {
+                          'Content-Type': 'application/json',
+                          'Access-Control-Allow-Origin': '*'
+                      }
+                  }
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(e)}),
+                      'headers': {'Content-Type': 'application/json'}
+                  }
+
+  # API Gateway
+  ReceiptApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AppName}-api'
+      Description: Receipt Processing API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Resource
+  ProcessResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ReceiptApi
+      ParentId: !GetAtt ReceiptApi.RootResourceId
+      PathPart: process
+
+  # API Gateway Method
+  ProcessMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ReceiptApi
+      ResourceId: !Ref ProcessResource
+      HttpMethod: POST
+      AuthorizationType: AWS_IAM
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProcessReceiptFunction.Arn}/invocations'
+
+  # OPTIONS Method for CORS
+  ProcessOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ReceiptApi
+      ResourceId: !Ref ProcessResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Lambda Permission for API Gateway
+  ApiGatewayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ProcessReceiptFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ReceiptApi}/*'
+
+  # API Gateway Deployment
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ProcessMethod
+      - ProcessOptionsMethod
+    Properties:
+      RestApiId: !Ref ReceiptApi
+      StageName: prod
+
+Outputs:
+  BucketName:
+    Description: S3 Bucket for receipts
+    Value: !Ref ReceiptBucket
+    Export:
+      Name: !Sub '${AppName}-bucket'
+
+  DynamoDBTableName:
+    Description: DynamoDB Table name
+    Value: !Ref ReceiptTable
+    Export:
+      Name: !Sub '${AppName}-table'
+
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub 'https://${ReceiptApi}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AppName}-api-endpoint'
+
+  AccessKeyId:
+    Description: Access Key ID for the application
+    Value: !Ref AppUserAccessKey
+
+  SecretAccessKey:
+    Description: Secret Access Key for the application
+    Value: !GetAtt AppUserAccessKey.SecretAccessKey
+
+  Region:
+    Description: AWS Region
+    Value: !Ref AWS::Region
