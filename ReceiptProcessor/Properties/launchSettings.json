@@ -14,9 +14,9 @@
       "launchBrowser": true,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "AWS_ACCESS_KEY_ID": "AKIA3BRZQB2BEPO6KUF2",
-        "AWS_SECRET_ACCESS_KEY": "+2CXd4wnCZQH79TPR4Vea0U2FyfM+9QrTijxPRDy",
-        "AWS_REGION": "us-east-1"
+        "AWS_ACCESS_KEY_ID": "<YOUR ACCESS KEY">,
+        "AWS_SECRET_ACCESS_KEY": "<YOUR SECRET KEY>",
+        "AWS_REGION": "<SELECT YOUR PREFERRED REGION>"
       },
       "dotnetRunMessages": true,
       "applicationUrl": "https://localhost:7284;http://localhost:5087"
